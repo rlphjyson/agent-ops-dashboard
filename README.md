@@ -128,6 +128,7 @@ staged success would be.
 | Live relay | Native WebSocket, in-process pub/sub | One connection type for both the fleet view and a run's live tail — see Production notes for the single-worker constraint this implies. |
 | Frontend | Next.js App Router + TS + Tailwind + shadcn | Matches projects 1–2. `lib/useRunEvents.ts` is the one genuinely new frontend pattern in the series versus the siblings' SSE-over-fetch approach. |
 | Auth | JWT (PyJWT + bcrypt) | Ported from `docuchat-ai` — required here, not optional, since a submitted task can run test commands and read allowlisted directories on the host. |
+| Desktop wrapper | Electron | Wraps the backend/frontend above unchanged, rather than a native rewrite — see "Desktop app (Electron)" below. |
 
 ## Getting started
 
@@ -156,6 +157,37 @@ npm run dev
 
 Set `ANTHROPIC_API_KEY` to use the Agent SDK engine; leave it unset (with a `claude` CLI already
 logged into a Claude Code subscription) to use the CLI engine instead.
+
+### Desktop app (Electron)
+
+This app spawns local `claude` subprocesses and reads local repos/processes via
+mcp-toolkit-ai — it was never really a good fit for a hosted web app in the first place.
+`desktop/` wraps the same FastAPI backend and Next.js frontend above in an Electron shell, so
+it runs as a real window instead of two terminals and a browser tab.
+
+Set up `backend/.venv` and `frontend/node_modules` first (the steps above) — Electron spawns
+those existing dev servers as child processes, it doesn't bundle or replace them:
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
+On launch it opens a window showing "Starting...", spawns
+`backend/.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000` (no `--reload`) and
+`next dev` (via Electron's own bundled Node, not through `npm`), health-polls both, then
+navigates to the real app once they're up — typically a few seconds. Closing the window tears
+down both child processes and their full process trees (`taskkill /pid <pid> /T /F` on Windows),
+so nothing is left running in the background.
+
+`ANTHROPIC_API_KEY` and `MCP_TOOLKIT_PATH` work the same way as the manual setup above — set
+them in the environment `npm start` is run from.
+
+**Scoped as "for now," not a finished installer**: `electron-builder` is wired up
+(`npm run package`) but not yet used to produce a signed `.exe`; the backend runs from the dev
+`.venv` rather than a bundled Python runtime; auth (JWT login/signup) is left exactly as-is even
+though a single-user desktop install could arguably drop it.
 
 ### Docker
 
