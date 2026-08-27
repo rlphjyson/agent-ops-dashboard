@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import Engine
@@ -8,8 +9,9 @@ from app.db import get_engine, get_session
 from app.deps import get_current_user
 from app.models import Run, RunEvent, User
 from app.schemas import RunCreateRequest, RunEventResponse, RunResponse
+from app.services import run_registry
 from app.services.agent_engines.base import AgentEngine
-from app.services.agent_runner import execute_run, get_agent_engine
+from app.services.agent_runner import continue_run, execute_run, get_agent_engine
 from app.services.event_bus import EventBus, get_event_bus
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -71,6 +73,63 @@ def create_run(
         agent_engine,
         lambda event: bus.publish(run.id, event),
     )
+    return _to_run_response(run)
+
+
+@router.post("/{run_id}/messages", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+def send_message(
+    run_id: str,
+    payload: RunCreateRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+    engine: Engine = Depends(get_engine),
+    agent_engine: AgentEngine = Depends(get_agent_engine),
+    bus: EventBus = Depends(get_event_bus),
+    user: User = Depends(get_current_user),
+) -> RunResponse:
+    run = _get_owned_run(run_id, session, user)
+    if run.status in ("queued", "running"):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="This run is still in progress.")
+    if not run.session_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="This run has no resumable session to continue yet.",
+        )
+
+    background_tasks.add_task(
+        continue_run,
+        run.id,
+        payload.prompt,
+        engine,
+        agent_engine,
+        lambda event: bus.publish(run.id, event),
+    )
+    return _to_run_response(run)
+
+
+@router.post("/{run_id}/cancel", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+async def cancel_run(
+    run_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)
+) -> RunResponse:
+    # async def, not a plain def, deliberately: FastAPI runs sync endpoints in a threadpool
+    # worker thread, but run_registry.cancel() calls task.cancel() and an engine's kill hook
+    # (e.g. CliAgentEngine's process.kill), both of which need to run on the SAME thread as the
+    # event loop that actually owns that Task/Process -- calling them cross-thread isn't safe
+    # with asyncio and was confirmed live to make Stop take anywhere from ~10s to nearly 2
+    # minutes to actually take effect. async def keeps this endpoint on the event loop itself.
+    run = _get_owned_run(run_id, session, user)
+    if run.status not in ("queued", "running"):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="This run is not in progress.")
+
+    if not run_registry.cancel(run_id):
+        # No live task found for this run (e.g. the server restarted after it was left
+        # "running") -- there's nothing left to actually interrupt, but the DB shouldn't stay
+        # stuck showing "running" forever either.
+        run.status = "cancelled"
+        run.completed_at = datetime.now(UTC)
+        session.add(run)
+        session.commit()
+        session.refresh(run)
     return _to_run_response(run)
 
 

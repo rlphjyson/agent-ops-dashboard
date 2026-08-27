@@ -2,7 +2,7 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
@@ -38,8 +38,23 @@ connect_args = {"check_same_thread": False} if settings.database_url.startswith(
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
 
+def _add_missing_columns() -> None:
+    # create_all only creates missing *tables*, not columns added to a model after a local dev
+    # DB file already exists -- there's no Alembic here (a single-column addition doesn't
+    # warrant it), so this tiny idempotent check-then-ALTER stands in for one. Safe to run on
+    # every startup: a fresh DB has no "run" table yet (the PRAGMA query below just returns
+    # nothing), and an up-to-date one already has the column, so the ALTER is skipped.
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(run)"))}
+        if columns and "session_id" not in columns:
+            conn.execute(text("ALTER TABLE run ADD COLUMN session_id TEXT"))
+            conn.commit()
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        _add_missing_columns()
 
 
 def get_engine() -> Engine:

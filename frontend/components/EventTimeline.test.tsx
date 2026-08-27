@@ -59,4 +59,32 @@ describe("EventTimeline", () => {
     render(<EventTimeline events={events} />);
     expect(screen.getByText(/checkout not found/i)).toBeInTheDocument();
   });
+
+  it("renders a follow-up user_text event", () => {
+    const events: RunEvent[] = [
+      {
+        id: 1,
+        run_id: "r1",
+        kind: "user_text",
+        payload: { text: "Now check the other file too." },
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    render(<EventTimeline events={events} />);
+    expect(screen.getByText("Now check the other file too.")).toBeInTheDocument();
+  });
+
+  it("renders a cancelled event", () => {
+    const events: RunEvent[] = [
+      {
+        id: 1,
+        run_id: "r1",
+        kind: "cancelled",
+        payload: { message: "Stopped by user." },
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    render(<EventTimeline events={events} />);
+    expect(screen.getByText("Stopped by user.")).toBeInTheDocument();
+  });
 });

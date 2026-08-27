@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, OctagonX } from "lucide-react";
 import type { RunEvent } from "@/lib/api";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ToolResultCard } from "@/components/ToolResultCard";
@@ -18,6 +18,12 @@ function EventRow({ event }: { event: RunEvent }) {
           {event.payload.text}
         </div>
       );
+    case "user_text":
+      return (
+        <div className="ml-auto max-w-2xl rounded-md bg-primary/10 p-3 text-sm whitespace-pre-wrap">
+          {event.payload.text}
+        </div>
+      );
     case "tool_use":
       return <ToolCallCard payload={event.payload} />;
     case "tool_result":
@@ -28,6 +34,13 @@ function EventRow({ event }: { event: RunEvent }) {
       return (
         <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
           <AlertTriangle className="size-4 shrink-0" />
+          {event.payload.message}
+        </div>
+      );
+    case "cancelled":
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-muted-foreground/30 bg-muted/40 p-3 text-sm text-muted-foreground">
+          <OctagonX className="size-4 shrink-0" />
           {event.payload.message}
         </div>
       );

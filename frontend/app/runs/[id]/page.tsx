@@ -7,6 +7,7 @@ import { useRunEvents } from "@/lib/useRunEvents";
 import { applyLatestEventToRun } from "@/lib/runs";
 import { StatusBadge } from "@/components/StatusBadge";
 import { EventTimeline } from "@/components/EventTimeline";
+import { RunComposer } from "@/components/RunComposer";
 
 export default function RunDetailPage({ params }: PageProps<"/runs/[id]">) {
   const { id: runId } = use(params);
@@ -46,6 +47,11 @@ export default function RunDetailPage({ params }: PageProps<"/runs/[id]">) {
         <StatusBadge status={mergedRun.status} />
       </div>
       <EventTimeline events={events} />
+      <RunComposer
+        token={token}
+        run={mergedRun}
+        onOptimisticUpdate={(patch) => setRun((prev) => (prev ? { ...prev, ...patch } : prev))}
+      />
     </main>
   );
 }

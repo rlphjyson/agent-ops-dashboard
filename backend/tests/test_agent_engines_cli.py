@@ -1,10 +1,12 @@
 import asyncio
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from app.services.agent_engines import cli as cli_module
 from app.services.agent_engines.cli import _parse_line, to_cli_mcp_config
 from app.services.mcp_config import ServerConfig
 
@@ -62,6 +64,7 @@ def test_parse_line_extracts_the_final_result_event() -> None:
     assert payload["num_turns"] == 2
     assert payload["cost_usd"] == 0.046294800000000004
     assert "Test Note" in payload["result_text"]
+    assert payload["session_id"] == "297011a2-64d1-42ef-8322-5714634c6c58"
 
 
 def test_parse_line_extracts_the_system_init_event() -> None:
@@ -73,6 +76,9 @@ def test_parse_line_extracts_the_system_init_event() -> None:
         "mcp__knowledge_base__get_backlinks",
         "mcp__knowledge_base__search_notes",
     ]
+    # Captured here too, not just on the final "result" line -- a run cancelled before ever
+    # reaching a result event still needs a resumable session_id.
+    assert system_events[0].payload["session_id"] == "297011a2-64d1-42ef-8322-5714634c6c58"
 
 
 def test_parse_line_skips_stream_event_and_rate_limit_lines() -> None:
@@ -103,6 +109,32 @@ def test_parse_line_extracts_tool_result_content_for_a_dict_returning_tool() -> 
     # (debug-verify.md, debug-verify-2.md, ...), and this fixture was captured by re-running the
     # same debug script against the same vault more than once.
     assert content["path"].startswith("debug-verify")
+
+
+def test_kill_process_tree_uses_taskkill_with_tree_and_force_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression test for a real, live-caught bug: the `claude` CLI (npm package, Windows) spawns
+    # a *child* claude.exe process inheriting a near-identical command line. A plain
+    # process.kill() only terminates the immediate wrapper PID, leaving that real child running
+    # indefinitely as an orphan (confirmed live: still burning real API cost minutes later, even
+    # though the run showed "cancelled"). /T /F is what actually kills the whole tree -- the same
+    # fix already used for this project's own Electron desktop wrapper teardown.
+    captured: dict[str, object] = {}
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["stdout"] = kwargs.get("stdout")
+        captured["stderr"] = kwargs.get("stderr")
+
+    monkeypatch.setattr(cli_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(cli_module.subprocess, "Popen", _fake_popen)
+
+    cli_module._kill_process_tree(4242)
+
+    assert captured["args"] == ["taskkill", "/pid", "4242", "/T", "/F"]
+    assert captured["stdout"] is cli_module.subprocess.DEVNULL
+    assert captured["stderr"] is cli_module.subprocess.DEVNULL
 
 
 def test_to_cli_mcp_config_shape(tmp_path: Path) -> None:
@@ -183,3 +215,194 @@ async def test_reading_stdout_without_the_limit_fix_reproduces_the_real_bug() ->
         async for _ in process.stdout:
             pass
     await process.wait()
+
+
+class _EmptyStdout:
+    def __aiter__(self) -> "_EmptyStdout":
+        return self
+
+    async def __anext__(self) -> bytes:
+        raise StopAsyncIteration
+
+
+class _EmptyProcess:
+    stdout = _EmptyStdout()
+    stderr = None
+    returncode = 0
+    pid = 111
+
+    def kill(self) -> None:
+        pass
+
+    async def wait(self) -> int:
+        return 0
+
+
+class _HangingStdout:
+    def __aiter__(self) -> "_HangingStdout":
+        return self
+
+    async def __anext__(self) -> bytes:
+        # Simulates a still-running process that hasn't produced its next line yet -- blocks
+        # forever so a test can cancel the surrounding task while genuinely mid-await here,
+        # exactly where a real Stop request would interrupt a real subprocess read.
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class _HangingProcess:
+    def __init__(self) -> None:
+        self.stdout = _HangingStdout()
+        self.stderr = None
+        self.returncode: int | None = None
+        self.pid = 222
+
+    async def wait(self) -> int:
+        assert self.returncode is not None
+        return self.returncode
+
+
+async def test_run_passes_the_resume_flag_when_a_session_id_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, tuple] = {}
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return _EmptyProcess()
+
+    monkeypatch.setattr(cli_module, "_resolve_cli_path", lambda: "claude")
+    monkeypatch.setattr(cli_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    engine = cli_module.CliAgentEngine()
+    events = [e async for e in engine.run("hi", {}, resume_session_id="sess-xyz")]
+
+    assert events == []
+    args = captured["args"]
+    assert "--resume" in args
+    assert args[args.index("--resume") + 1] == "sess-xyz"
+
+
+async def test_run_omits_the_resume_flag_for_a_fresh_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, tuple] = {}
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return _EmptyProcess()
+
+    monkeypatch.setattr(cli_module, "_resolve_cli_path", lambda: "claude")
+    monkeypatch.setattr(cli_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    engine = cli_module.CliAgentEngine()
+    [e async for e in engine.run("hi", {})]
+
+    assert "--resume" not in captured["args"]
+
+
+async def test_run_registers_a_tree_killer_as_the_kill_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    # register_killer is what lets run_registry.cancel() kill the real subprocess directly,
+    # instead of relying solely on task cancellation -- confirmed live to not promptly interrupt
+    # a pending stdout read on Windows (see run_registry's module docstring). It's registered as
+    # a call into _kill_process_tree, not a bare process.kill: confirmed live that the `claude`
+    # CLI spawns a *child* claude.exe process that survives killing only the immediate PID.
+    fake_process = _EmptyProcess()
+    killed_pids: list[int] = []
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return fake_process
+
+    monkeypatch.setattr(cli_module, "_resolve_cli_path", lambda: "claude")
+    monkeypatch.setattr(cli_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(cli_module, "_kill_process_tree", killed_pids.append)
+
+    registered: list[Callable[[], None]] = []
+    engine = cli_module.CliAgentEngine()
+    [e async for e in engine.run("hi", {}, register_killer=registered.append)]
+
+    assert len(registered) == 1
+    registered[0]()
+    assert killed_pids == [fake_process.pid]
+
+
+async def test_run_kills_the_subprocess_tree_when_cancelled_mid_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression-style test for the same class of orphaned-process bug already found and fixed
+    # once this session in the Electron desktop wrapper's own shutdown handling: stopping a run
+    # must not leave the real `claude` subprocess (or its child) running in the background. This
+    # exercises the fallback path -- no register_killer given, so CliAgentEngine's own
+    # CancelledError handler is what has to call _kill_process_tree.
+    fake_process = _HangingProcess()
+    killed_pids: list[int] = []
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return fake_process
+
+    monkeypatch.setattr(cli_module, "_resolve_cli_path", lambda: "claude")
+    monkeypatch.setattr(cli_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(cli_module, "_kill_process_tree", killed_pids.append)
+
+    engine = cli_module.CliAgentEngine()
+
+    async def _consume() -> None:
+        async for _ in engine.run("hi", {}):
+            pass
+
+    task = asyncio.create_task(_consume())
+    for _ in range(10):
+        await asyncio.sleep(0)  # let it reach the hanging stdout await
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert killed_pids == [fake_process.pid]
+
+
+class _NeverResolvingWait:
+    """Simulates the exact real bug found live: a process whose wait() hangs forever once it's
+    already been killed out-of-band (by register_killer's hook, called from run_registry before
+    task.cancel() even reaches this generator) -- confirmed on this Windows environment to be a
+    real asyncio subprocess-watcher quirk, not a hypothetical. The fix is that CliAgentEngine's
+    CancelledError handler must never call `await process.wait()` at all; this class exists so a
+    regression that reintroduces that call makes this test hang/timeout instead of silently
+    passing."""
+
+    def __init__(self) -> None:
+        self.stdout = _HangingStdout()
+        self.stderr = None
+        self.returncode: int | None = None
+        self.pid = 333
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+async def test_run_does_not_await_process_wait_again_after_cancelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_process = _NeverResolvingWait()
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return fake_process
+
+    monkeypatch.setattr(cli_module, "_resolve_cli_path", lambda: "claude")
+    monkeypatch.setattr(cli_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(cli_module, "_kill_process_tree", lambda pid: None)
+
+    engine = cli_module.CliAgentEngine()
+
+    async def _consume() -> None:
+        async for _ in engine.run("hi", {}):
+            pass
+
+    task = asyncio.create_task(_consume())
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    task.cancel()
+    # If CliAgentEngine ever calls `await process.wait()` again here, this hangs forever and the
+    # test times out instead of completing -- that's deliberate, see the class docstring above.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)

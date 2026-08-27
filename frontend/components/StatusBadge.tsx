@@ -7,6 +7,7 @@ const STATUS_STYLES: Record<RunStatus, string> = {
   running: "bg-blue-600 text-white",
   completed: "bg-emerald-600 text-white",
   failed: "",
+  cancelled: "",
 };
 
 const STATUS_VARIANT: Record<RunStatus, "secondary" | "default" | "destructive"> = {
@@ -14,6 +15,7 @@ const STATUS_VARIANT: Record<RunStatus, "secondary" | "default" | "destructive">
   running: "default",
   completed: "default",
   failed: "destructive",
+  cancelled: "secondary",
 };
 
 export function StatusBadge({ status }: { status: RunStatus }) {

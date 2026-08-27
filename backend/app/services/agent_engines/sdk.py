@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -47,21 +47,41 @@ class SdkAgentEngine:
     not this one, but this specific combination -- API key + allowed_tools -- hasn't been live-
     tested yet since no key was available during Phase 0). Verify with a real key before relying
     on this engine for anything beyond local dev; see the plan's Risk #0.
+
+    Cancellation (a stopped run) relies on the SDK's own async-generator cleanup when `query()`'s
+    iterator is torn down mid-cancellation -- not separately verified live the way the CLI
+    engine's subprocess-kill path was; flagged rather than assumed correct. `register_killer` is
+    accepted for Protocol conformance but never called: this engine doesn't expose the SDK's own
+    internal subprocess to forcibly kill it directly the way CliAgentEngine does.
     """
 
     async def run(
-        self, prompt: str, mcp_servers: dict[str, ServerConfig]
+        self,
+        prompt: str,
+        mcp_servers: dict[str, ServerConfig],
+        resume_session_id: str | None = None,
+        register_killer: Callable[[Callable[[], None]], None] | None = None,
     ) -> AsyncIterator[NormalizedEvent]:
         options = ClaudeAgentOptions(
             mcp_servers=_to_agent_sdk_servers(mcp_servers),
             allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
+            resume=resume_session_id,
         )
 
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, SystemMessage):
                 if message.subtype == "init":
+                    # Mirrors the CLI engine capturing session_id from its own "system" event
+                    # (not just the final result) -- lets a cancelled run still be resumed. Not
+                    # separately confirmed live for this engine (message.data's exact keys
+                    # weren't verified against a real SystemMessage), but .get() degrades to
+                    # None harmlessly if it's absent.
                     yield NormalizedEvent(
-                        kind="system", payload={"tools": message.data.get("tools", [])}
+                        kind="system",
+                        payload={
+                            "tools": message.data.get("tools", []),
+                            "session_id": message.data.get("session_id"),
+                        },
                     )
                 continue
 
@@ -102,6 +122,7 @@ class SdkAgentEngine:
                         "result_text": message.result or "",
                         "cost_usd": message.total_cost_usd,
                         "num_turns": message.num_turns,
+                        "session_id": message.session_id,
                     },
                 )
                 continue

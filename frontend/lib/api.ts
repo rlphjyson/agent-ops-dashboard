@@ -1,6 +1,6 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed";
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface Run {
   id: string;
@@ -17,6 +17,7 @@ export interface Run {
 
 export interface SystemPayload {
   tools: string[];
+  session_id?: string | null;
 }
 export interface AssistantTextPayload {
   text: string;
@@ -40,6 +41,12 @@ export interface ResultPayload {
 export interface ErrorPayload {
   message: string;
 }
+export interface UserTextPayload {
+  text: string;
+}
+export interface CancelledPayload {
+  message: string;
+}
 
 interface RunEventBase {
   id: number;
@@ -56,7 +63,9 @@ export type RunEvent =
   | (RunEventBase & { kind: "tool_use"; payload: ToolUsePayload })
   | (RunEventBase & { kind: "tool_result"; payload: ToolResultPayload })
   | (RunEventBase & { kind: "result"; payload: ResultPayload })
-  | (RunEventBase & { kind: "error"; payload: ErrorPayload });
+  | (RunEventBase & { kind: "error"; payload: ErrorPayload })
+  | (RunEventBase & { kind: "user_text"; payload: UserTextPayload })
+  | (RunEventBase & { kind: "cancelled"; payload: CancelledPayload });
 
 export class ApiError extends Error {
   constructor(
@@ -125,6 +134,22 @@ export function getRunEvents(token: string, runId: string): Promise<RunEvent[]> 
 
 export function deleteRun(token: string, runId: string): Promise<void> {
   return request(`/runs/${runId}`, { method: "DELETE" }, token);
+}
+
+export function sendMessage(token: string, runId: string, prompt: string): Promise<Run> {
+  return request(
+    `/runs/${runId}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    },
+    token,
+  );
+}
+
+export function cancelRun(token: string, runId: string): Promise<Run> {
+  return request(`/runs/${runId}/cancel`, { method: "POST" }, token);
 }
 
 /** Builds the /ws/runs URL, translating the API base's http(s) scheme to ws(s) -- a browser's

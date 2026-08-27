@@ -22,5 +22,8 @@ export function applyLatestEventToRun(run: Run, events: RunEvent[]): Run {
   if (latest.kind === "error") {
     return { ...run, status: "failed", error_message: latest.payload.message };
   }
+  if (latest.kind === "cancelled") {
+    return { ...run, status: "cancelled" };
+  }
   return run.status === "queued" ? { ...run, status: "running" } : run;
 }

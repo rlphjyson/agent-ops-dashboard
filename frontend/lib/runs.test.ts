@@ -72,6 +72,13 @@ describe("applyLatestEventToRun", () => {
     expect(result.error_message).toBe("toolkit not found");
   });
 
+  it("applies a cancelled event", () => {
+    const result = applyLatestEventToRun(BASE_RUN, [
+      event({ kind: "cancelled", payload: { message: "Stopped by user." } }),
+    ]);
+    expect(result.status).toBe("cancelled");
+  });
+
   it("uses only the latest relevant event, not an earlier one", () => {
     const result = applyLatestEventToRun(BASE_RUN, [
       event({ id: 1, kind: "assistant_text", payload: { text: "thinking" } }),

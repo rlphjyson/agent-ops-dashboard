@@ -1,8 +1,12 @@
 import asyncio
 import json
+import os
+import platform
 import shutil
+import signal
+import subprocess
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +14,36 @@ from app.config import get_settings
 from app.services import mcp_config
 from app.services.agent_engines.base import NormalizedEvent
 from app.services.mcp_config import ServerConfig
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kills the process and everything it spawned, not just the immediate PID. Confirmed live:
+    the `claude` CLI (npm package, Windows) is itself a thin wrapper that spawns a *child*
+    claude.exe process inheriting a near-identical command line -- killing only the wrapper PID
+    (what asyncio's Process object tracks) leaves that real child running as an orphan
+    indefinitely, still burning real API cost, even though the run shows "cancelled" in the UI.
+    Same class of bug, same fix, as this project's own Electron desktop wrapper teardown
+    (taskkill /T /F, not a plain .kill()/process.kill()).
+
+    subprocess.Popen here is fire-and-forget -- it only issues CreateProcess for taskkill itself
+    and returns immediately, so this doesn't block the event loop it's called from despite being
+    a synchronous call."""
+    if platform.system() == "Windows":
+        subprocess.Popen(  # noqa: S603, S607 -- fixed argv, no shell, no user input
+            ["taskkill", "/pid", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        # Not verified live on this platform (this project's dev/target environment is
+        # Windows) -- kills only the immediate process, which may have the same
+        # orphaned-grandchild gap described above. getattr, not a bare signal.SIGKILL
+        # reference: that attribute doesn't exist in the Windows signal module's type stubs,
+        # which this project's mypy run always checks against regardless of the runtime branch.
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except ProcessLookupError:
+            pass
 
 
 class CliNotFoundError(Exception):
@@ -95,7 +129,16 @@ def _parse_line(line: str) -> NormalizedEvent | None:
     line_type = obj.get("type")
 
     if line_type == "system" and obj.get("subtype") == "init":
-        return NormalizedEvent(kind="system", payload={"tools": obj.get("tools", [])})
+        # Every stream-json line carries session_id (confirmed against a real captured
+        # transcript), including this one, the first line of any run -- capturing it here too
+        # (not just from the final "result" line) is what lets a run *cancelled* mid-flight,
+        # which never reaches a "result" event, still be resumed afterward via
+        # POST /runs/{id}/messages. A real, live-caught bug: a cancelled run's session_id stayed
+        # None and "continue the conversation" always failed with "no resumable session".
+        return NormalizedEvent(
+            kind="system",
+            payload={"tools": obj.get("tools", []), "session_id": obj.get("session_id")},
+        )
 
     if line_type == "assistant":
         for block in obj.get("message", {}).get("content", []):
@@ -135,6 +178,10 @@ def _parse_line(line: str) -> NormalizedEvent | None:
                 "result_text": obj.get("result") or "",
                 "cost_usd": obj.get("total_cost_usd"),
                 "num_turns": obj.get("num_turns"),
+                # Every stream-json line carries this (confirmed against a real captured
+                # transcript, not just the "system init" line) -- persisted so a later
+                # POST /runs/{id}/messages can pass it back as --resume.
+                "session_id": obj.get("session_id"),
             },
         )
 
@@ -152,7 +199,11 @@ class CliAgentEngine:
     """
 
     async def run(
-        self, prompt: str, mcp_servers: dict[str, ServerConfig]
+        self,
+        prompt: str,
+        mcp_servers: dict[str, ServerConfig],
+        resume_session_id: str | None = None,
+        register_killer: Callable[[Callable[[], None]], None] | None = None,
     ) -> AsyncIterator[NormalizedEvent]:
         settings = get_settings()
         cli_path = _resolve_cli_path()
@@ -164,26 +215,32 @@ class CliAgentEngine:
             json.dump(to_cli_mcp_config(mcp_servers), config_file)
             config_path = config_file.name
 
+        args = [
+            cli_path,
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--mcp-config",
+            config_path,
+            "--permission-mode",
+            "dontAsk",
+            "--tools",
+            "",
+            "--allowedTools",
+            allowed_tools,
+            "--max-budget-usd",
+            str(settings.agent_max_budget_usd),
+            "--max-turns",
+            str(settings.agent_max_turns),
+        ]
+        if resume_session_id:
+            args += ["--resume", resume_session_id]
+
         try:
             process = await asyncio.create_subprocess_exec(
-                cli_path,
-                "-p",
-                prompt,
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--mcp-config",
-                config_path,
-                "--permission-mode",
-                "dontAsk",
-                "--tools",
-                "",
-                "--allowedTools",
-                allowed_tools,
-                "--max-budget-usd",
-                str(settings.agent_max_budget_usd),
-                "--max-turns",
-                str(settings.agent_max_turns),
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 # asyncio's default StreamReader buffer is 64KB -- a single stream-json line can
@@ -195,27 +252,43 @@ class CliAgentEngine:
                 limit=10 * 1024 * 1024,
             )
             assert process.stdout is not None
+            if register_killer is not None:
+                register_killer(lambda: _kill_process_tree(process.pid))
 
-            saw_result = False
-            async for raw_line in process.stdout:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                event = _parse_line(line)
-                if event is not None:
-                    if event.kind == "result":
-                        saw_result = True
-                    yield event
+            try:
+                saw_result = False
+                async for raw_line in process.stdout:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    event = _parse_line(line)
+                    if event is not None:
+                        if event.kind == "result":
+                            saw_result = True
+                        yield event
 
-            stderr = (await process.stderr.read()) if process.stderr else b""
-            returncode = await process.wait()
-            if returncode != 0 and not saw_result:
-                # A `result` line (including a failed one) is itself a normal, already-surfaced
-                # outcome; only a *silent* non-zero exit (crashed before producing one) needs a
-                # synthetic error raised here for agent_runner to catch.
-                raise RuntimeError(
-                    f"claude exited with code {returncode}: "
-                    f"{stderr.decode('utf-8', errors='replace')[:2000]}"
-                )
+                stderr = (await process.stderr.read()) if process.stderr else b""
+                returncode = await process.wait()
+                if returncode != 0 and not saw_result:
+                    # A `result` line (including a failed one) is itself a normal, already-
+                    # surfaced outcome; only a *silent* non-zero exit (crashed before producing
+                    # one) needs a synthetic error raised here for agent_runner to catch.
+                    raise RuntimeError(
+                        f"claude exited with code {returncode}: "
+                        f"{stderr.decode('utf-8', errors='replace')[:2000]}"
+                    )
+            except asyncio.CancelledError:
+                # Stopping a run cancels agent_runner's task while it's mid-await inside this
+                # loop. register_killer's hook (above) has usually already killed the process
+                # tree by now via run_registry -- this is a defensive fallback for direct
+                # engine usage that never wired register_killer in the first place.
+                # Deliberately NOT awaiting process.wait() here: confirmed live that calling
+                # wait() a second time, after the process was already killed out-of-band by that
+                # hook, hangs forever on this Windows environment (a real asyncio/
+                # ProactorEventLoop subprocess-watcher quirk, not a bug in this code) rather than
+                # returning once the process has, in fact, already exited. _kill_process_tree is
+                # itself fire-and-forget (doesn't wait for taskkill), so this can't hang either.
+                _kill_process_tree(process.pid)
+                raise
         finally:
             Path(config_path).unlink(missing_ok=True)
