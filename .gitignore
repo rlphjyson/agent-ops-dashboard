@@ -10,6 +10,12 @@ venv/
 backend/data/
 backend/*.db
 
+# docs/demo-repo/setup_demo_repo.py generates these locally -- the fixture ships as a script,
+# not a checked-in nested git repo (awkward gitlink handling for no real benefit here).
+docs/demo-repo/.git/
+docs/demo-repo/calculator.py
+docs/demo-repo/tests/
+
 # Node
 node_modules/
 frontend/.next/

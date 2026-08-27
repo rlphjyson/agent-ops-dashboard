@@ -89,6 +89,35 @@ flowchart LR
 4. **Dashboard** — the fleet page shows every run's live status; a run's detail page renders an
    ordered timeline of tool calls, results, reasoning, and the final outcome.
 
+## Example: a real run
+
+`docs/demo-repo/setup_demo_repo.py` builds a tiny fixture repo with two commits — a working
+`calculator.add()`, then one that quietly breaks it (`return a + b` → `return a - b`, disguised
+as "Simplify add() implementation"). Submitting *"Run the test suite in this repo, then look at
+recent commits to figure out which change caused the failures, and summarize the root cause"*
+produced this real run (CLI engine, no `ANTHROPIC_API_KEY`, actual cost $0.075, 8 turns):
+
+1. `devenv.run_repo_tests({"command": "pytest -q"})` → `pytest` not on PATH.
+2. Retried with `python -m pytest -q`, then `py -m pytest -q` — neither resolved either (a real
+   environment quirk, not staged).
+3. Adapted: `devenv.get_recent_git_commits(...)`, `codebase.index_repository(...)`,
+   `codebase.search_code(...)`, `codebase.get_file_history({"path": "calculator.py"})`.
+4. Final answer, verbatim:
+
+   > I couldn't actually execute pytest — the devenv sandbox has no Python interpreter available
+   > (`pytest`, `python`, and `py` are all missing). Instead I inspected the repo's commit
+   > history and file contents directly, which is enough to identify the issue confidently.
+   >
+   > **Root cause:** The second commit, `05030a9` ("Simplify add() implementation"), changed
+   > `calculator.py`'s `add()` from `return a + b` to `return a - b`. This breaks `test_add`
+   > (`add(2,3)` now returns -1, not 5) and `test_add_negative` (`add(-2,3)` now returns -5, not
+   > 1). `test_multiply` is unaffected since `multiply()` wasn't touched.
+
+No test runner ever actually ran — the agent fell back to reading source and git history
+directly and still reached the correct diagnosis. Left unedited here rather than re-run for a
+cleaner transcript: it's a more honest demonstration of tool-chaining under a real failure than a
+staged success would be.
+
 ## Tech stack
 
 | Layer | Choice | Why |
