@@ -1,0 +1,22 @@
+{
+  "name": "agent-ops-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.rlphjyson.agent-ops-dashboard",
+    "productName": "Agent Ops Dashboard",
+    "files": ["main.js", "preload.js"],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
