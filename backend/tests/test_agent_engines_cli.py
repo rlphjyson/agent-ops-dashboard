@@ -1,5 +1,9 @@
+import asyncio
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from app.services.agent_engines.cli import _parse_line, to_cli_mcp_config
 from app.services.mcp_config import ServerConfig
@@ -127,3 +131,55 @@ def test_to_cli_mcp_config_shape(tmp_path: Path) -> None:
             }
         }
     }
+
+
+_PRINT_A_100K_CHAR_LINE = 'print("x" * 100_000)'  # generated inside the subprocess, not passed
+# as a literal argument -- a 100K-char string embedded directly in the command line itself hits
+# Windows' own CreateProcess argument-length limit ("filename or extension is too long"),
+# a different and unrelated limit from the asyncio StreamReader one this test actually targets.
+
+
+async def test_reading_stdout_does_not_raise_on_a_line_over_64kb() -> None:
+    # Regression test for a real, live-caught bug: asyncio's default StreamReader buffer is 64KB,
+    # and a single stream-json line (e.g. a system init event listing every tool across several
+    # MCP servers) can exceed that -- confirmed live against a project wired up with 19 tools,
+    # which crashed every run with a ValueError from asyncio's stream-limit check ("Separator is
+    # found, but chunk is longer than limit" / "Separator is not found, and chunk exceed the
+    # limit", depending on exactly where the overrun is detected). CliAgentEngine.run passes
+    # limit=10MB to create_subprocess_exec to fix this; this test exercises that exact mechanic
+    # (a real subprocess emitting an oversized line, read the same way CliAgentEngine reads it)
+    # without needing the real claude binary.
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _PRINT_A_100K_CHAR_LINE,
+        stdout=asyncio.subprocess.PIPE,
+        limit=10 * 1024 * 1024,
+    )
+    assert process.stdout is not None
+
+    lines = []
+    async for raw_line in process.stdout:
+        lines.append(raw_line.decode("utf-8").strip())
+    await process.wait()
+
+    assert lines == ["x" * 100_000]
+
+
+async def test_reading_stdout_without_the_limit_fix_reproduces_the_real_bug() -> None:
+    # The other half of the regression: confirms the failure mode itself is real (not a made-up
+    # concern) by reproducing it with the default 64KB limit -- if this stops raising on some
+    # future Python/asyncio version, the fix above may no longer be necessary, which is exactly
+    # the kind of drift this test would catch.
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _PRINT_A_100K_CHAR_LINE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+
+    with pytest.raises(ValueError, match="chunk"):
+        async for _ in process.stdout:
+            pass
+    await process.wait()

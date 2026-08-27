@@ -118,3 +118,51 @@ def test_run_events_404s_for_a_run_owned_by_someone_else(client: TestClient) -> 
 
     response = client.get(f"/runs/{run_id}/events", headers=other_headers)
     assert response.status_code == 404
+
+
+def test_delete_run_removes_it_and_its_events(
+    client: TestClient, auth_headers: dict[str, str], fake_agent_engine: FakeAgentEngine
+) -> None:
+    fake_agent_engine.events = [
+        NormalizedEvent(kind="assistant_text", payload={"text": "hi"}),
+    ]
+    run_id = client.post("/runs", json={"prompt": "to delete"}, headers=auth_headers).json()["id"]
+
+    response = client.delete(f"/runs/{run_id}", headers=auth_headers)
+    assert response.status_code == 204
+
+    assert client.get(f"/runs/{run_id}", headers=auth_headers).status_code == 404
+    assert client.get(f"/runs/{run_id}/events", headers=auth_headers).status_code == 404
+    assert run_id not in [r["id"] for r in client.get("/runs", headers=auth_headers).json()]
+
+
+def test_delete_run_requires_auth(client: TestClient) -> None:
+    response = client.delete("/runs/some-id")
+    assert response.status_code == 401
+
+
+def test_delete_run_404s_for_a_run_owned_by_someone_else(client: TestClient) -> None:
+    owner_headers = {
+        "Authorization": "Bearer "
+        + client.post(
+            "/auth/signup", json={"email": "owner2@example.com", "password": "password123"}
+        ).json()["access_token"]
+    }
+    other_headers = {
+        "Authorization": "Bearer "
+        + client.post(
+            "/auth/signup", json={"email": "other2@example.com", "password": "password123"}
+        ).json()["access_token"]
+    }
+
+    run_id = client.post("/runs", json={"prompt": "secret"}, headers=owner_headers).json()["id"]
+
+    response = client.delete(f"/runs/{run_id}", headers=other_headers)
+    assert response.status_code == 404
+    # Never actually deleted -- the owner can still see it.
+    assert client.get(f"/runs/{run_id}", headers=owner_headers).status_code == 200
+
+
+def test_delete_run_404s_for_an_unknown_id(client: TestClient, auth_headers: dict[str, str]) -> None:
+    response = client.delete("/runs/does-not-exist", headers=auth_headers)
+    assert response.status_code == 404

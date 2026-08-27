@@ -186,6 +186,13 @@ class CliAgentEngine:
                 str(settings.agent_max_turns),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # asyncio's default StreamReader buffer is 64KB -- a single stream-json line can
+                # easily exceed that (a system init event listing every tool across many MCP
+                # servers, or a tool_result carrying real file/search content), which raises
+                # LimitOverrunError ("Separator is found, but chunk is longer than limit") and
+                # was crashing real runs. Confirmed live against a project with 19+ tools wired
+                # in. 10MB comfortably covers any realistic single-line JSON event here.
+                limit=10 * 1024 * 1024,
             )
             assert process.stdout is not None
 

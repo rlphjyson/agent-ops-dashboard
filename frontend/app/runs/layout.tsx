@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useRequireAuth } from "@/lib/auth";
-import { listRuns, type Run } from "@/lib/api";
+import { deleteRun, listRuns, type Run } from "@/lib/api";
 import { useRunEvents } from "@/lib/useRunEvents";
 import { applyLatestEventToRun } from "@/lib/runs";
 import { RunSidebar } from "@/components/RunSidebar";
@@ -12,6 +12,7 @@ import { TopBar } from "@/components/TopBar";
 export default function RunsLayout({ children }: { children: React.ReactNode }) {
   const { token } = useRequireAuth();
   const pathname = usePathname();
+  const router = useRouter();
   const [runs, setRuns] = useState<Run[]>([]);
   const [loaded, setLoaded] = useState(false);
   const { events } = useRunEvents(token);
@@ -33,11 +34,18 @@ export default function RunsLayout({ children }: { children: React.ReactNode }) 
     [runs, events],
   );
 
+  async function handleDelete(runId: string) {
+    if (!token) return;
+    await deleteRun(token, runId);
+    setRuns((prev) => prev.filter((run) => run.id !== runId));
+    if (pathname === `/runs/${runId}`) router.push("/runs");
+  }
+
   if (!token) return null;
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <RunSidebar runs={mergedRuns} loaded={loaded} />
+      <RunSidebar runs={mergedRuns} loaded={loaded} onDelete={handleDelete} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar />
         <div className="flex-1 overflow-y-auto">{children}</div>

@@ -123,6 +123,10 @@ export function getRunEvents(token: string, runId: string): Promise<RunEvent[]> 
   return request(`/runs/${runId}/events`, {}, token);
 }
 
+export function deleteRun(token: string, runId: string): Promise<void> {
+  return request(`/runs/${runId}`, { method: "DELETE" }, token);
+}
+
 /** Builds the /ws/runs URL, translating the API base's http(s) scheme to ws(s) -- a browser's
  * native WebSocket API can't set an Authorization header, so the token travels as a query param
  * instead (see the backend's routers/ws.py for the matching decode). */

@@ -1,21 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Info } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import type { RunEvent } from "@/lib/api";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ToolResultCard } from "@/components/ToolResultCard";
 import { ResultBanner } from "@/components/ResultBanner";
+import { SystemToolsRow } from "@/components/SystemToolsRow";
 
 function EventRow({ event }: { event: RunEvent }) {
   switch (event.kind) {
     case "system":
-      return (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Info className="size-3.5" />
-          {event.payload.tools.length} tool{event.payload.tools.length === 1 ? "" : "s"} available
-        </div>
-      );
+      return <SystemToolsRow payload={event.payload} />;
     case "assistant_text":
       return (
         <div className="max-w-2xl rounded-md bg-muted/60 p-3 text-sm whitespace-pre-wrap">

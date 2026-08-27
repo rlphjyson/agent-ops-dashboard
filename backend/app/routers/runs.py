@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import Engine
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from app.db import get_engine, get_session
 from app.deps import get_current_user
@@ -105,3 +105,18 @@ def get_run_events(
         .order_by(RunEvent.id)  # type: ignore[arg-type]
     ).all()
     return [_to_event_response(e) for e in events]
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_run(
+    run_id: str, session: Session = Depends(get_session), user: User = Depends(get_current_user)
+) -> None:
+    run = _get_owned_run(run_id, session, user)
+    # Deletable regardless of status, including "running" -- a still-in-flight background task
+    # holds only the run_id string, not a reference to this row, so it harmlessly keeps executing
+    # and its later _emit() calls just insert RunEvents for a run_id that no longer exists (SQLite
+    # doesn't enforce the FK by default here). Events are deleted first/explicitly rather than
+    # relying on cascade behavior that isn't configured on the model.
+    session.exec(delete(RunEvent).where(RunEvent.run_id == run_id))  # type: ignore[arg-type]
+    session.delete(run)
+    session.commit()

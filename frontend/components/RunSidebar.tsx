@@ -2,13 +2,28 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, Plus } from "lucide-react";
+import { Bot, Plus, Trash2 } from "lucide-react";
 import type { Run } from "@/lib/api";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export function RunSidebar({ runs, loaded }: { runs: Run[]; loaded: boolean }) {
+interface RunSidebarProps {
+  runs: Run[];
+  loaded: boolean;
+  onDelete: (runId: string) => void;
+}
+
+export function RunSidebar({ runs, loaded, onDelete }: RunSidebarProps) {
   const pathname = usePathname();
+
+  function handleDeleteClick(event: React.MouseEvent, run: Run) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (window.confirm(`Delete "${run.prompt.slice(0, 60)}"? This can't be undone.`)) {
+      onDelete(run.id);
+    }
+  }
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
@@ -40,17 +55,26 @@ export function RunSidebar({ runs, loaded }: { runs: Run[]; loaded: boolean }) {
             {runs.map((run) => {
               const active = pathname === `/runs/${run.id}`;
               return (
-                <li key={run.id}>
+                <li key={run.id} className="group relative">
                   <Link
                     href={`/runs/${run.id}`}
                     className={cn(
-                      "flex flex-col gap-1.5 rounded-md px-2.5 py-2 text-sm transition-colors hover:bg-sidebar-accent",
+                      "flex flex-col gap-1.5 rounded-md py-2 pr-8 pl-2.5 text-sm transition-colors hover:bg-sidebar-accent",
                       active && "bg-sidebar-accent",
                     )}
                   >
                     <span className="truncate">{run.prompt}</span>
                     <StatusBadge status={run.status} />
                   </Link>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Delete conversation"
+                    onClick={(event) => handleDeleteClick(event, run)}
+                    className="absolute top-1/2 right-1 size-6 -translate-y-1/2 opacity-0 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
                 </li>
               );
             })}

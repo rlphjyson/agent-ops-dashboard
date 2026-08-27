@@ -54,14 +54,21 @@ function spawnBackend() {
 }
 
 function spawnFrontend() {
-  // shell: true -- "npm" resolves to npm.cmd on Windows, which spawn() can't launch directly
-  // without going through a shell (same PATHEXT issue as the backend's python, solved the other
-  // way: an absolute path there, a shell here, since there's no bundled node binary to point at
-  // directly the way there's a venv-local python.exe).
-  frontendProcess = spawn("npm", ["run", "dev"], {
+  // Spawn Next's CLI script directly through Electron's own bundled Node (process.execPath),
+  // with ELECTRON_RUN_AS_NODE forcing that one child invocation to behave as plain node -- NOT
+  // "npm run dev" with shell: true, which was tried first and found to orphan the real frontend
+  // process tree on shutdown: shell: true wraps the command in a cmd.exe that hands off to
+  // npm.cmd and exits early once "next dev" is actually running, so by the time shutdown() calls
+  // `taskkill /T` on the recorded pid, that pid (the cmd.exe wrapper) is already gone and the
+  // tree-walk has nothing left to find -- confirmed live: after a graceful Electron quit, four
+  // node.exe processes (npm's wrapper, next's CLI, its start-server, a turbopack worker) were
+  // still running. Spawning next's script directly makes frontendProcess.pid the actual
+  // long-lived process, so its own descendants (start-server, turbopack workers) nest correctly
+  // underneath it and /T can walk down to all of them.
+  const nextBin = path.join(FRONTEND_DIR, "node_modules", "next", "dist", "bin", "next");
+  frontendProcess = spawn(process.execPath, [nextBin, "dev"], {
     cwd: FRONTEND_DIR,
-    env: process.env,
-    shell: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   });
   frontendProcess.stdout.on("data", (d) => {
     console.log(`[frontend] ${d}`);
