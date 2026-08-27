@@ -157,6 +157,31 @@ npm run dev
 Set `ANTHROPIC_API_KEY` to use the Agent SDK engine; leave it unset (with a `claude` CLI already
 logged into a Claude Code subscription) to use the CLI engine instead.
 
+### Docker
+
+`docker-compose.yml` + Dockerfiles are provided for both services. The backend image installs
+Node.js and the `claude` CLI (both agent engines ultimately need the native binary), and
+bind-mounts a sibling `mcp-toolkit-ai` checkout at `/mcp-toolkit-ai` — read-write, since several
+of its servers write into their own directory by default.
+
+**One real wrinkle**: a `.venv` you built locally for `mcp-toolkit-ai` was built for your host
+OS, not necessarily Linux, which the backend container is. Bootstrap a container-compatible one
+once, into a differently-named `.venv-linux` so it doesn't collide with your local `.venv`:
+
+```bash
+docker run --rm -v "$(pwd)/../mcp-toolkit-ai:/mcp-toolkit-ai" -w /mcp-toolkit-ai python:3.12-slim \
+  bash -c "python -m venv .venv-linux && .venv-linux/bin/pip install \
+    -e servers/codebase_intelligence -e servers/sql_query -e servers/issue_tracker \
+    -e servers/dev_environment -e servers/knowledge_base"
+
+docker compose up --build
+```
+
+**Not build-tested**: Docker wasn't available in the environment this was built in, so these
+files are written correctly per the reasoning above (and mirror `prreview-ai`'s already-verified
+Node/claude-CLI Dockerfile pattern) but haven't actually been run. Said explicitly rather than
+claiming otherwise — verify locally before relying on it.
+
 ## Testing
 
 - Every backend test goes through the `AgentEngine` Protocol seam — a `FakeAgentEngine` yields

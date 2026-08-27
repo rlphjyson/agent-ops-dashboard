@@ -1,0 +1,37 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-me-please-32-bytes-min}
+      DATABASE_URL: sqlite:///./data/agent_ops.db
+      CORS_ORIGINS: http://localhost:3000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MCP_TOOLKIT_PATH: /mcp-toolkit-ai
+      # The venv mcp-toolkit-ai's own README/local-dev setup produces is built for whatever OS
+      # you ran it on -- not necessarily Linux, which this container is. See README's Docker
+      # section for the one-time `.venv-linux` bootstrap this points at instead of the default
+      # `.venv` convention (unverified end-to-end: Docker wasn't available in the environment
+      # this was built in -- these files are written correctly per that reasoning but not
+      # build-tested).
+      MCP_TOOLKIT_VENV_PYTHON: /mcp-toolkit-ai/.venv-linux/bin/python
+    volumes:
+      - backend-data:/app/data
+      # Not read-only: several of mcp-toolkit-ai's servers write into their own directory by
+      # default (sql_query's SQLite file, codebase_intelligence's Chroma index, knowledge_base's
+      # vault, dev_environment's logs) -- a :ro mount would break exactly the write-capable tools
+      # (create_note, index_repository) the flagship demo and others depend on.
+      - ../mcp-toolkit-ai:/mcp-toolkit-ai
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
