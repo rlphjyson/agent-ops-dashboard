@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +8,13 @@ from app.config import get_settings
 from app.db import init_db
 from app.routers import auth, runs, ws
 from app.services import mcp_config
+
+# Nothing else in the app configures logging, and relying on uvicorn's own internal setup for
+# *our* application loggers (e.g. app.services.agent_runner's logger.exception calls) is fragile
+# -- whether it propagates to a visible handler depends on uvicorn's dictConfig timing relative
+# to when our modules are imported. Explicit and unconditional, so a background task's exception
+# is never silently unloggable regardless of that timing.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager

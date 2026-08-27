@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from sqlmodel import Session
 from app.models import Run, RunEvent
 from app.services import mcp_config
 from app.services.agent_engines.base import AgentEngine
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -113,8 +116,13 @@ async def execute_run(
             toolkit_path = mcp_config.resolve_toolkit_path()
             mcp_servers = mcp_config.load_toolkit_servers(toolkit_path)
         except Exception as exc:
-            _fail(session, run, str(exc))
-            _emit(session, run_id, "error", {"message": str(exc)}, on_event)
+            # logger.exception (not just str(exc)) because some exceptions stringify to "" with
+            # no arguments (e.g. a bare CancelledError) -- without the traceback in the server
+            # log, a failure like that is completely silent and undiagnosable from the API alone.
+            logger.exception("Failed to resolve mcp-toolkit-ai servers for run %s", run_id)
+            message = str(exc) or f"{type(exc).__name__} (see server log for the full traceback)"
+            _fail(session, run, message)
+            _emit(session, run_id, "error", {"message": message}, on_event)
             return
 
         try:
@@ -131,5 +139,7 @@ async def execute_run(
         except Exception as exc:
             # No `result` event ever arrived (bad path, subprocess spawn failure, API error) --
             # without this, the frontend would see "running" forever.
-            _fail(session, run, str(exc))
-            _emit(session, run_id, "error", {"message": str(exc)}, on_event)
+            logger.exception("Agent engine failed mid-run for run %s", run_id)
+            message = str(exc) or f"{type(exc).__name__} (see server log for the full traceback)"
+            _fail(session, run, message)
+            _emit(session, run_id, "error", {"message": message}, on_event)
