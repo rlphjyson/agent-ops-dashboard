@@ -1,0 +1,62 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import { AlertTriangle, Info } from "lucide-react";
+import type { RunEvent } from "@/lib/api";
+import { ToolCallCard } from "@/components/ToolCallCard";
+import { ToolResultCard } from "@/components/ToolResultCard";
+import { ResultBanner } from "@/components/ResultBanner";
+
+function EventRow({ event }: { event: RunEvent }) {
+  switch (event.kind) {
+    case "system":
+      return (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Info className="size-3.5" />
+          {event.payload.tools.length} tool{event.payload.tools.length === 1 ? "" : "s"} available
+        </div>
+      );
+    case "assistant_text":
+      return (
+        <div className="max-w-2xl rounded-md bg-muted/60 p-3 text-sm whitespace-pre-wrap">
+          {event.payload.text}
+        </div>
+      );
+    case "tool_use":
+      return <ToolCallCard payload={event.payload} />;
+    case "tool_result":
+      return <ToolResultCard payload={event.payload} />;
+    case "result":
+      return <ResultBanner payload={event.payload} />;
+    case "error":
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          <AlertTriangle className="size-4 shrink-0" />
+          {event.payload.message}
+        </div>
+      );
+  }
+}
+
+export function EventTimeline({ events }: { events: RunEvent[] }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Optional chaining on the method itself, not just the ref: jsdom (used by the test
+    // environment) doesn't implement scrollIntoView at all.
+    bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+  }, [events.length]);
+
+  if (events.length === 0) {
+    return <p className="text-sm text-muted-foreground">Waiting for the agent to start...</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {events.map((event) => (
+        <EventRow key={event.id} event={event} />
+      ))}
+      <div ref={bottomRef} />
+    </div>
+  );
+}
